@@ -1,9 +1,6 @@
 mod fast_orderbook;
 mod market_processor;
-mod file_monitor;
 mod grpc_server;
-mod market_manager;
-mod orderbook;
 mod types;
 
 use anyhow::Result;
@@ -134,6 +131,13 @@ async fn main() -> Result<()> {
                                 let elapsed = start_time.elapsed().as_secs_f64();
                                 let rate = order_count as f64 / elapsed;
                                 info!("Processed {} orders, {:.0} orders/sec", order_count, rate);
+                                
+                                // Log orderbook snapshot for debugging
+                                let (bids, asks) = orderbook.get_snapshot(5);
+                                if !bids.is_empty() && !asks.is_empty() {
+                                    info!("{} orderbook - Best bid: ${:.2}, Best ask: ${:.2}, Spread: ${:.2}", 
+                                          coin, bids[0].0, asks[0].0, asks[0].0 - bids[0].0);
+                                }
                             }
                         }
                     }
@@ -180,15 +184,50 @@ fn process_json_order(
 
     let order = &order_data["order"];
     let status = order_data["status"].as_str()?;
+    let user = order_data["user"].as_str().unwrap_or("unknown");
     
     let order_id = order["oid"].as_u64()?;
     let price = order["limitPx"].as_str()?.parse::<f64>().ok()?;
     let size = order["sz"].as_str()?.parse::<f64>().ok()?;
+    // In this system:
+    // "B" = Bid side (buy orders)
+    // "A" = Ask side (sell orders)
     let is_buy = order["side"].as_str()? == "B";
     let timestamp = order["timestamp"].as_u64()?;
+    
+    // Check for trigger/stop orders
+    let is_trigger = order["isTrigger"].as_bool().unwrap_or(false);
+    let trigger_condition = order["triggerCondition"].as_str().unwrap_or("");
+    
+    // Log price updates for debugging
+    let coin = order["coin"].as_str().unwrap_or("?");
+    let side = order["side"].as_str().unwrap_or("?");
+    let order_type = if is_trigger { 
+        format!("TRIGGER:{}", trigger_condition) 
+    } else { 
+        "LIMIT".to_string() 
+    };
+    
+    info!("{} side={} ({}) order: price={:.2}, size={:.4}, status={}, type={}, user={}", 
+          coin, side, if is_buy { "BUY" } else { "SELL" }, price, size, status, order_type, user);
 
     match status {
         "open" => {
+            // Skip trigger/stop orders as they shouldn't be in the orderbook until triggered
+            if is_trigger {
+                info!("Skipping trigger order: {} {} @ ${:.2}", coin, trigger_condition, price);
+                return None;
+            }
+            
+            // Filter out unrealistic orders for BTC
+            if coin == "BTC" {
+                // For BTC, reasonable range is $95k - $115k based on current market
+                if price < 95_000.0 || price > 115_000.0 {
+                    info!("Skipping unrealistic BTC price: ${:.2}", price);
+                    return None;
+                }
+            }
+            
             let order = Order {
                 id: order_id,
                 price,
@@ -200,6 +239,7 @@ fn process_json_order(
         "filled" | "canceled" | "cancelled" => {
             orderbook.remove_order(order_id, price, is_buy)
         }
+        // Ignore all other statuses - they should not be in the orderbook
         _ => None,
     }
 }

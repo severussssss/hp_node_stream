@@ -55,7 +55,7 @@ class OrderbookServiceServicer(object):
     """Missing associated documentation comment in .proto file."""
 
     def SubscribeOrderbook(self, request, context):
-        """Stream L2 orderbook snapshots for subscribed markets
+        """Subscribe to orderbook updates
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -69,7 +69,7 @@ class OrderbookServiceServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def GetMarkets(self, request, context):
-        """Get market info
+        """Get available markets
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')

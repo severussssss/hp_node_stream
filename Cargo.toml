@@ -35,6 +35,16 @@ simd-json = "0.13"  # SIMD JSON parsing
 rocksdb = { version = "0.21", optional = true }
 lz4 = "1.24"
 
+# Additional dependencies for realtime
+anyhow = "1.0"
+clap = { version = "4.0", features = ["derive"] }
+chrono = "0.4"
+smallvec = "1.11"
+memmap2 = "0.9"
+core_affinity = "0.8"
+num_cpus = "1.16"
+tokio-stream = "0.1"
+
 [build-dependencies]
 tonic-build = "0.10"
 
@@ -42,6 +52,10 @@ tonic-build = "0.10"
 lto = true
 codegen-units = 1
 opt-level = 3
+
+[[bin]]
+name = "orderbook-service-realtime"
+path = "src/main_realtime.rs"
 
 [features]
 default = ["persistence"]
