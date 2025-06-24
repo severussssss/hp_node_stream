@@ -219,15 +219,6 @@ fn process_json_order(
                 return None;
             }
             
-            // Filter out unrealistic orders for BTC
-            if coin == "BTC" {
-                // For BTC, reasonable range is $95k - $115k based on current market
-                if price < 95_000.0 || price > 115_000.0 {
-                    info!("Skipping unrealistic BTC price: ${:.2}", price);
-                    return None;
-                }
-            }
-            
             let order = Order {
                 id: order_id,
                 price,
