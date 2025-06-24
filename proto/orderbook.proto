@@ -1,0 +1,95 @@
+syntax = "proto3";
+
+package orderbook;
+
+service OrderbookService {
+    // Stream real-time orderbook updates
+    rpc StreamOrderbook(StreamRequest) returns (stream OrderbookUpdate);
+    
+    // Get current orderbook snapshot
+    rpc GetOrderbook(GetOrderbookRequest) returns (OrderbookSnapshot);
+    
+    // Get best bid/ask
+    rpc GetBestPrices(GetBestPricesRequest) returns (BestPrices);
+    
+    // Calculate market impact
+    rpc CalculateImpact(ImpactRequest) returns (ImpactResponse);
+}
+
+message StreamRequest {
+    repeated uint32 market_ids = 1;
+    uint32 depth = 2;
+    bool include_trades = 3;
+}
+
+message GetOrderbookRequest {
+    uint32 market_id = 1;
+    uint32 depth = 2;
+}
+
+message GetBestPricesRequest {
+    repeated uint32 market_ids = 1;
+}
+
+message Level {
+    double price = 1;
+    double size = 2;
+    uint32 order_count = 3;
+}
+
+message OrderbookSnapshot {
+    uint32 market_id = 1;
+    uint64 sequence = 2;
+    int64 timestamp = 3;
+    repeated Level bids = 4;
+    repeated Level asks = 5;
+    double spread = 6;
+    double mid_price = 7;
+}
+
+message OrderbookUpdate {
+    enum Type {
+        SNAPSHOT = 0;
+        DELTA = 1;
+        TRADE = 2;
+    }
+    Type update_type = 1;
+    OrderbookSnapshot snapshot = 2;
+    Trade trade = 3;
+}
+
+message Trade {
+    uint32 market_id = 1;
+    double price = 2;
+    double size = 3;
+    bool is_buy = 4;
+    int64 timestamp = 5;
+}
+
+message BestPrices {
+    message Price {
+        double bid = 1;
+        double bid_size = 2;
+        double ask = 3;
+        double ask_size = 4;
+        double mid = 5;
+        double spread = 6;
+    }
+    map<uint32, Price> prices = 1;
+    int64 timestamp = 2;
+}
+
+message ImpactRequest {
+    uint32 market_id = 1;
+    bool is_buy = 2;
+    double size = 3;
+}
+
+message ImpactResponse {
+    double avg_price = 1;
+    double best_price = 2;
+    double worst_price = 3;
+    double slippage_bps = 4;
+    bool sufficient_liquidity = 5;
+    double available_size = 6;
+}
