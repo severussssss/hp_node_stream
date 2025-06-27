@@ -2,43 +2,51 @@ mod fast_orderbook;
 mod market_processor;
 mod grpc_server;
 mod types;
+mod markets;
+mod stop_orders;
+mod mark_price;
+mod mark_price_v2;
+mod oracle_client;
+mod mark_price_service;
+mod order_parser;
+mod robust_order_processor;
 
 use anyhow::Result;
 use clap::Parser;
 use fast_orderbook::FastOrderbook;
 use market_processor::MarketUpdate;
+use robust_order_processor::{RobustOrderProcessor, ProcessorConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tonic::transport::Server;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
     #[arg(short, long, default_value = "50052")]
     grpc_port: u16,
+    
+    /// Enable metrics endpoint
+    #[arg(long, default_value = "false")]
+    enable_metrics: bool,
+    
+    /// Metrics port (if enabled)
+    #[arg(long, default_value = "9090")]
+    metrics_port: u16,
+    
+    /// Require API key authentication
+    #[arg(long, default_value = "false")]
+    require_auth: bool,
+    
+    /// API keys (comma-separated)
+    #[arg(long, env = "API_KEYS")]
+    api_keys: Option<String>,
 }
 
-// Market name to ID mapping
-fn get_market_id(coin: &str) -> Option<u32> {
-    match coin {
-        "BTC" => Some(0),
-        "ETH" => Some(1),
-        "ARB" => Some(2),
-        "OP" => Some(3),
-        "MATIC" => Some(4),
-        "AVAX" => Some(5),
-        "SOL" => Some(6),
-        "ATOM" => Some(7),
-        "FTM" => Some(8),
-        "NEAR" => Some(9),
-        "HYPE" => Some(159),
-        _ => None,
-    }
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -53,20 +61,11 @@ async fn main() -> Result<()> {
 
     info!("Starting real-time orderbook service");
     info!("gRPC port: {}", args.grpc_port);
+    info!("Metrics enabled: {}", args.enable_metrics);
+    info!("Authentication required: {}", args.require_auth);
 
-    // Market configurations
-    let market_configs = HashMap::from([
-        (0, "BTC".to_string()),
-        (1, "ETH".to_string()),
-        (2, "ARB".to_string()),
-        (3, "OP".to_string()),
-        (4, "MATIC".to_string()),
-        (5, "AVAX".to_string()),
-        (6, "SOL".to_string()),
-        (7, "ATOM".to_string()),
-        (8, "FTM".to_string()),
-        (9, "NEAR".to_string()),
-    ]);
+    // Get all market configurations
+    let market_configs = markets::get_all_markets();
 
     info!("Tracking {} markets", market_configs.len());
 
@@ -79,6 +78,14 @@ async fn main() -> Result<()> {
         let orderbook = Arc::new(FastOrderbook::new(*market_id, symbol.clone()));
         orderbooks.insert(*market_id, orderbook);
     }
+    
+    // Create stop order manager
+    let stop_order_manager = Arc::new(stop_orders::StopOrderManager::new());
+    
+    // Create oracle client and start feed
+    let oracle_client = Arc::new(oracle_client::OracleClient::new());
+    oracle_client.start_oracle_feed(tokio::time::Duration::from_secs(3)).await;
+    info!("Started oracle price feed (updates every 3 seconds)");
 
     // Get current hour for the data file
     let hour_str = chrono::Local::now().format("%H").to_string();
@@ -88,57 +95,25 @@ async fn main() -> Result<()> {
 
     info!("Reading real-time orders from: {}", data_path);
 
-    // Spawn order processor
-    let orderbooks_clone = orderbooks.clone();
-    let update_tx_clone = update_tx.clone();
+    // Spawn oracle price updater
+    let orderbooks_for_oracle = orderbooks.clone();
+    let oracle_client_clone = oracle_client.clone();
+    let market_configs_clone = market_configs.clone();
     tokio::spawn(async move {
-        // Start tailing the file using docker exec
-        let mut cmd = Command::new("docker")
-            .args(&["exec", "hyperliquid-node-1", "tail", "-f", &data_path])
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .expect("Failed to start docker exec");
-
-        let stdout = cmd.stdout.take().expect("Failed to get stdout");
-        let reader = BufReader::new(stdout);
-        let mut lines = reader.lines();
-
-        let mut order_count = 0u64;
-        let start_time = std::time::Instant::now();
-
-        while let Ok(Some(line)) = lines.next_line().await {
-            // Parse JSON order
-            if let Ok(order_data) = serde_json::from_str::<serde_json::Value>(&line) {
-                if let Some(coin) = order_data["order"]["coin"].as_str() {
-                    if let Some(market_id) = get_market_id(coin) {
-                        if let Some(orderbook) = orderbooks_clone.get(&market_id) {
-                            // Process the order
-                            if let Some(delta) = process_json_order(&order_data, orderbook) {
-                                let update = MarketUpdate {
-                                    market_id,
-                                    sequence: orderbook.sequence.load(std::sync::atomic::Ordering::Relaxed),
-                                    timestamp_ns: std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .unwrap()
-                                        .as_nanos() as u64,
-                                    deltas: vec![delta],
-                                };
-                                let _ = update_tx_clone.send(update);
-                            }
-
-                            order_count += 1;
-                            if order_count % 1000 == 0 {
-                                let elapsed = start_time.elapsed().as_secs_f64();
-                                let rate = order_count as f64 / elapsed;
-                                info!("Processed {} orders, {:.0} orders/sec", order_count, rate);
-                                
-                                // Log orderbook snapshot for debugging
-                                let (bids, asks) = orderbook.get_snapshot(5);
-                                if !bids.is_empty() && !asks.is_empty() {
-                                    info!("{} orderbook - Best bid: ${:.2}, Best ask: ${:.2}, Spread: ${:.2}", 
-                                          coin, bids[0].0, asks[0].0, asks[0].0 - bids[0].0);
-                                }
-                            }
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(3));
+        loop {
+            interval.tick().await;
+            
+            // Get all oracle prices
+            let prices = oracle_client_clone.get_all_cached_prices().await;
+            
+            // Update each orderbook with its oracle price
+            for (market_id, orderbook) in &orderbooks_for_oracle {
+                if let Some(symbol) = market_configs_clone.get(market_id) {
+                    if let Some(oracle_price) = prices.get(symbol) {
+                        orderbook.set_oracle_price(*oracle_price);
+                        if orderbook.get_hl_mark_price().is_some() {
+                            log::debug!("{} oracle price updated: ${:.2}", symbol, oracle_price);
                         }
                     }
                 }
@@ -146,15 +121,77 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Create robust order processor with configuration
+    let processor_config = ProcessorConfig {
+        max_price: 10_000_000.0,  // $10M max
+        max_size: 1_000_000.0,     // 1M units max
+        error_threshold: 100,       // Trip circuit after 100 errors per minute
+        error_window: tokio::time::Duration::from_secs(60),
+        log_sample_rate: 10,        // Log every 10th error
+    };
+    
+    // Get list of allowed coins from market configs
+    let allowed_coins: Vec<String> = market_configs.values().cloned().collect();
+    
+    let processor = Arc::new(RobustOrderProcessor::new(processor_config, allowed_coins));
+    
+    // Spawn robust order processor
+    let orderbooks_clone = orderbooks.clone();
+    let update_tx_clone = update_tx.clone();
+    let stop_order_manager_clone = stop_order_manager.clone();
+    let processor_clone = processor.clone();
+    
+    tokio::spawn(async move {
+        if let Err(e) = processor_clone
+            .start(data_path, orderbooks_clone, update_tx_clone, stop_order_manager_clone)
+            .await
+        {
+            error!("Order processor failed: {}", e);
+        }
+    });
+
+    // Create mark price service (1Hz updates)
+    let mark_price_service = Arc::new(mark_price_service::MarkPriceService::new(
+        orderbooks.clone(),
+        oracle_client.clone(),
+        tokio::time::Duration::from_secs(1),
+    ));
+    
+    // Start mark price calculations
+    let mark_price_rx = mark_price_service.clone().start().await;
+    info!("Started mark price service (1Hz updates)");
+
     // Create gRPC server
     let addr = format!("0.0.0.0:{}", args.grpc_port).parse()?;
     info!("Starting gRPC server on {}", addr);
 
-    let service = crate::grpc_server::create_delta_streaming_service(orderbooks, update_rx);
+    let mut service = crate::grpc_server::create_delta_streaming_service(orderbooks, update_rx, stop_order_manager);
+    
+    // Inject mark price service
+    service.set_mark_price_service(mark_price_service, mark_price_rx);
+    
+    // Setup authentication if required
+    if args.require_auth {
+        info!("Authentication enabled");
+        if let Some(keys) = args.api_keys {
+            let valid_keys: std::collections::HashSet<String> = keys
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            info!("Loaded {} API keys", valid_keys.len());
+            // Note: We'll need to add auth wrapper to the service
+            // For now, just log that auth is requested
+        } else {
+            warn!("Authentication required but no API keys provided");
+        }
+    }
+    
+    let service_server = crate::grpc_server::pb::orderbook_service_server::OrderbookServiceServer::new(service);
 
     let server_handle = tokio::spawn(async move {
         if let Err(e) = Server::builder()
-            .add_service(service)
+            .add_service(service_server)
             .serve(addr)
             .await
         {
@@ -174,63 +211,4 @@ async fn main() -> Result<()> {
 
     info!("Shutting down real-time orderbook service");
     Ok(())
-}
-
-fn process_json_order(
-    order_data: &serde_json::Value,
-    orderbook: &Arc<FastOrderbook>,
-) -> Option<crate::fast_orderbook::OrderbookDelta> {
-    use crate::fast_orderbook::Order;
-
-    let order = &order_data["order"];
-    let status = order_data["status"].as_str()?;
-    let user = order_data["user"].as_str().unwrap_or("unknown");
-    
-    let order_id = order["oid"].as_u64()?;
-    let price = order["limitPx"].as_str()?.parse::<f64>().ok()?;
-    let size = order["sz"].as_str()?.parse::<f64>().ok()?;
-    // In this system:
-    // "B" = Bid side (buy orders)
-    // "A" = Ask side (sell orders)
-    let is_buy = order["side"].as_str()? == "B";
-    let timestamp = order["timestamp"].as_u64()?;
-    
-    // Check for trigger/stop orders
-    let is_trigger = order["isTrigger"].as_bool().unwrap_or(false);
-    let trigger_condition = order["triggerCondition"].as_str().unwrap_or("");
-    
-    // Log price updates for debugging
-    let coin = order["coin"].as_str().unwrap_or("?");
-    let side = order["side"].as_str().unwrap_or("?");
-    let order_type = if is_trigger { 
-        format!("TRIGGER:{}", trigger_condition) 
-    } else { 
-        "LIMIT".to_string() 
-    };
-    
-    info!("{} side={} ({}) order: price={:.2}, size={:.4}, status={}, type={}, user={}", 
-          coin, side, if is_buy { "BUY" } else { "SELL" }, price, size, status, order_type, user);
-
-    match status {
-        "open" => {
-            // Skip trigger/stop orders as they shouldn't be in the orderbook until triggered
-            if is_trigger {
-                info!("Skipping trigger order: {} {} @ ${:.2}", coin, trigger_condition, price);
-                return None;
-            }
-            
-            let order = Order {
-                id: order_id,
-                price,
-                size,
-                timestamp,
-            };
-            Some(orderbook.add_order(order, is_buy))
-        }
-        "filled" | "canceled" | "cancelled" => {
-            orderbook.remove_order(order_id, price, is_buy)
-        }
-        // Ignore all other statuses - they should not be in the orderbook
-        _ => None,
-    }
 }

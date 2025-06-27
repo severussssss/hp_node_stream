@@ -1,0 +1,8 @@
+{
+  "host": "orderbook.example.com",
+  "port": 443,
+  "api_key": "YOUR_API_KEY_HERE",
+  "tls_ca": "/path/to/ca.crt",
+  "tls_cert": "/path/to/client.crt",
+  "tls_key": "/path/to/client.key"
+}

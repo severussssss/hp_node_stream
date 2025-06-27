@@ -2,6 +2,8 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use parking_lot::RwLock;
 use smallvec::SmallVec;
+use crate::mark_price::{MarkPriceCalculator, MarkPriceResult};
+use crate::mark_price_v2::{HyperliquidMarkPriceCalculator, MarkPriceInputs, CEXPrices, MarkPriceResult as HLMarkPriceResult};
 
 const MAX_PRICE_LEVELS: usize = 1000;
 const ORDERS_PER_LEVEL: usize = 8;
@@ -62,6 +64,19 @@ pub struct FastOrderbook {
     
     // Delta tracking
     pub last_update_seq: AtomicU64,
+    
+    // Mark price calculation (old version for compatibility)
+    mark_price_calc: RwLock<MarkPriceCalculator>,
+    last_mark_price: RwLock<Option<MarkPriceResult>>,
+    
+    // Hyperliquid's exact mark price calculation
+    hl_mark_price_calc: RwLock<HyperliquidMarkPriceCalculator>,
+    last_hl_mark_price: RwLock<Option<HLMarkPriceResult>>,
+    
+    // External price feeds (would come from oracle/CEX in production)
+    oracle_price: RwLock<Option<f64>>,
+    cex_prices: RwLock<Option<CEXPrices>>,
+    last_trade_price: RwLock<Option<f64>>,
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +90,13 @@ pub enum OrderbookDelta {
 
 impl FastOrderbook {
     pub fn new(market_id: u32, symbol: String) -> Self {
+        // Configure mark price calculator with sensible defaults
+        let impact_notional = match symbol.as_str() {
+            "BTC" => 50000.0,   // $50k impact for BTC
+            "ETH" => 20000.0,   // $20k impact for ETH
+            _ => 10000.0,       // $10k impact for others
+        };
+        
         Self {
             market_id,
             symbol,
@@ -85,6 +107,17 @@ impl FastOrderbook {
             ask_count: AtomicUsize::new(0),
             total_orders: AtomicUsize::new(0),
             last_update_seq: AtomicU64::new(0),
+            mark_price_calc: RwLock::new(MarkPriceCalculator::new(
+                impact_notional,
+                10,  // 10 second EMA
+                50.0 // 50 bps max deviation
+            )),
+            last_mark_price: RwLock::new(None),
+            hl_mark_price_calc: RwLock::new(HyperliquidMarkPriceCalculator::new()),
+            last_hl_mark_price: RwLock::new(None),
+            oracle_price: RwLock::new(None),
+            cex_prices: RwLock::new(None),
+            last_trade_price: RwLock::new(None),
         }
     }
     
@@ -225,5 +258,117 @@ impl FastOrderbook {
         self.ask_count.store(0, Ordering::Relaxed);
         self.total_orders.store(0, Ordering::Relaxed);
         self.sequence.fetch_add(1, Ordering::Relaxed);
+    }
+    
+    pub fn update_mark_price(&self) -> Option<MarkPriceResult> {
+        let bids = self.bid_levels.read();
+        let asks = self.ask_levels.read();
+        
+        if bids.is_empty() || asks.is_empty() {
+            return None;
+        }
+        
+        // Get orderbook data for mark price calculation
+        let bid_levels: Vec<(f64, f64)> = bids
+            .iter()
+            .take(20)  // Use top 20 levels for impact calculation
+            .map(|level| (level.price, level.total_size))
+            .collect();
+            
+        let ask_levels: Vec<(f64, f64)> = asks
+            .iter()
+            .take(20)
+            .map(|level| (level.price, level.total_size))
+            .collect();
+        
+        // Release read locks before taking write lock
+        drop(bids);
+        drop(asks);
+        
+        // Calculate new mark price
+        let mut calc = self.mark_price_calc.write();
+        let mark_price_result = calc.calculate_mark_price(&bid_levels, &ask_levels);
+        
+        // Store result
+        if let Some(ref result) = mark_price_result {
+            *self.last_mark_price.write() = Some(result.clone());
+        }
+        
+        mark_price_result
+    }
+    
+    pub fn get_mark_price(&self) -> Option<MarkPriceResult> {
+        self.last_mark_price.read().clone()
+    }
+    
+    pub fn get_mark_price_value(&self) -> Option<f64> {
+        self.last_mark_price.read().as_ref().map(|r| r.mark_price)
+    }
+    
+    // Hyperliquid's exact mark price calculation methods
+    
+    pub fn update_oracle_price(&self, oracle_price: f64) {
+        *self.oracle_price.write() = Some(oracle_price);
+        self.hl_mark_price_calc.write().update_oracle_price(oracle_price);
+    }
+    
+    pub fn update_cex_prices(&self, cex_prices: CEXPrices) {
+        *self.cex_prices.write() = Some(cex_prices);
+    }
+    
+    pub fn update_last_trade(&self, trade_price: f64) {
+        *self.last_trade_price.write() = Some(trade_price);
+        self.hl_mark_price_calc.write().update_trade(trade_price);
+    }
+    
+    pub fn calculate_hl_mark_price(&self) -> Option<HLMarkPriceResult> {
+        let bids = self.bid_levels.read();
+        let asks = self.ask_levels.read();
+        
+        if bids.is_empty() || asks.is_empty() {
+            return None;
+        }
+        
+        let best_bid = bids[0].price;
+        let best_ask = asks[0].price;
+        
+        // Release read locks
+        drop(bids);
+        drop(asks);
+        
+        let inputs = MarkPriceInputs {
+            best_bid,
+            best_ask,
+            last_trade: *self.last_trade_price.read(),
+            oracle_price: *self.oracle_price.read(),
+            cex_prices: self.cex_prices.read().clone(),
+        };
+        
+        let mut calc = self.hl_mark_price_calc.write();
+        let result = calc.calculate_mark_price(&inputs);
+        
+        *self.last_hl_mark_price.write() = Some(result.clone());
+        
+        Some(result)
+    }
+    
+    pub fn get_hl_mark_price(&self) -> Option<HLMarkPriceResult> {
+        self.last_hl_mark_price.read().clone()
+    }
+    
+    pub fn get_hl_mark_price_value(&self) -> Option<f64> {
+        self.last_hl_mark_price.read().as_ref().map(|r| r.mark_price)
+    }
+    
+    pub fn get_oracle_price(&self) -> Option<f64> {
+        *self.oracle_price.read()
+    }
+    
+    pub fn get_last_trade_price(&self) -> Option<f64> {
+        *self.last_trade_price.read()
+    }
+    
+    pub fn get_cex_prices(&self) -> Option<CEXPrices> {
+        self.cex_prices.read().clone()
     }
 }

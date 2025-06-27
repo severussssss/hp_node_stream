@@ -1,0 +1,160 @@
+syntax = "proto3";
+
+package orderbook;
+
+service OrderbookService {
+    // L2 Data Endpoints (High Frequency)
+    rpc SubscribeOrderbook(SubscribeRequest) returns (stream OrderbookSnapshot);
+    rpc GetOrderbook(GetOrderbookRequest) returns (OrderbookSnapshot);
+    
+    // Mark Price Endpoints (Low Frequency - 1Hz)
+    rpc SubscribeMarkPrices(MarkPriceSubscribeRequest) returns (stream MarkPriceUpdate);
+    rpc GetMarkPrice(GetMarkPriceRequest) returns (MarkPriceResponse);
+    
+    // Metadata
+    rpc GetMarkets(Empty) returns (MarketsResponse);
+    
+    // Stop Orders
+    rpc GetStopOrders(StopOrdersRequest) returns (StopOrdersResponse);
+}
+
+message Empty {}
+
+message SubscribeRequest {
+    repeated uint32 market_ids = 1;
+    uint32 depth = 2;
+    uint32 update_interval_ms = 3;
+}
+
+message GetOrderbookRequest {
+    uint32 market_id = 1;
+    uint32 depth = 2;
+}
+
+message OrderbookSnapshot {
+    uint32 market_id = 1;
+    string symbol = 2;
+    uint64 sequence = 3;
+    int64 timestamp = 4;
+    repeated Level bids = 5;
+    repeated Level asks = 6;
+    // Mark price removed - use separate SubscribeMarkPrices endpoint
+}
+
+message MarkPrice {
+    double mark_price = 1;        // Final calculated mark price
+    double mid_price = 2;         // Simple mid price
+    double impact_bid_price = 3;  // Price to buy impact size
+    double impact_ask_price = 4;  // Price to sell impact size
+    double impact_mid_price = 5;  // Mid of impact prices
+    double ema_price = 6;         // Exponential moving average price
+    double confidence = 7;        // 0-1 confidence based on depth
+}
+
+// Hyperliquid's exact mark price calculation
+message HyperliquidMarkPrice {
+    double mark_price = 1;              // Final mark price (median of inputs)
+    double oracle_adjusted = 2;         // Oracle + 150s EMA(mid - oracle)
+    double internal_median = 3;         // Median(bid, ask, last_trade)
+    double cex_median = 4;              // Weighted median of CEX prices
+    bool used_fallback = 5;             // Whether 30s EMA fallback was used
+    
+    // Raw inputs for transparency
+    double oracle_price = 6;            // Current oracle price
+    double last_trade = 7;              // Last trade price
+    CEXPriceSnapshot cex_prices = 8;   // Individual CEX prices
+}
+
+message CEXPriceSnapshot {
+    double binance = 1;     // Weight: 3
+    double okx = 2;         // Weight: 2
+    double bybit = 3;       // Weight: 2
+    double gate = 4;        // Weight: 1
+    double mexc = 5;        // Weight: 1
+}
+
+message Level {
+    double price = 1;
+    double quantity = 2;
+}
+
+// Mark Price Messages
+message MarkPriceSubscribeRequest {
+    repeated uint32 market_ids = 1;
+    uint32 update_interval_ms = 2;  // Default 1000ms
+}
+
+message GetMarkPriceRequest {
+    uint32 market_id = 1;
+}
+
+message MarkPriceUpdate {
+    uint32 market_id = 1;
+    string symbol = 2;
+    int64 timestamp = 3;
+    HyperliquidMarkPrice hl_mark_price = 4;
+    uint64 calculation_version = 5;  // Track calculation changes
+}
+
+message MarkPriceResponse {
+    uint32 market_id = 1;
+    string symbol = 2;
+    int64 timestamp = 3;
+    HyperliquidMarkPrice hl_mark_price = 4;
+    bool from_cache = 5;
+    int64 cache_age_ms = 6;
+}
+
+message MarketsResponse {
+    repeated Market markets = 1;
+}
+
+message Market {
+    uint32 id = 1;
+    string symbol = 2;
+}
+
+message StopOrdersRequest {
+    oneof filter {
+        uint32 market_id = 1;
+        string user = 2;
+    }
+    
+    // Additional filters
+    double min_notional = 3;  // Minimum notional value (price * size)
+    double max_notional = 4;  // Maximum notional value
+    double max_distance_from_mid_bps = 5;  // Max distance from mid in basis points
+    string side = 6;  // Filter by side: "B" for buy, "A" for sell
+    
+    // Ranking parameters
+    bool rank_by_risk = 7;  // If true, orders will be ranked by risk score
+    double distance_weight = 8;  // Weight for distance in risk calculation (default 0.6)
+    double slippage_weight = 9;  // Weight for slippage in risk calculation (default 0.4)
+}
+
+message StopOrdersResponse {
+    repeated RankedStopOrder orders = 1;
+}
+
+message StopOrder {
+    uint64 id = 1;
+    string user = 2;
+    uint32 market_id = 3;
+    string coin = 4;
+    string side = 5;  // "B" for buy, "A" for sell
+    double price = 6;
+    double size = 7;
+    string trigger_condition = 8;
+    uint64 timestamp = 9;
+    double notional = 10;  // price * size
+    double distance_from_mid_bps = 11;  // Distance from current mid price in bps
+    double current_mid_price = 12;  // Current mid price when queried
+}
+
+message RankedStopOrder {
+    StopOrder order = 1;
+    double distance_to_trigger_bps = 2;
+    double expected_slippage_bps = 3;
+    double risk_score = 4;  // 0-100, higher = higher risk
+    string risk_level = 5;  // "HIGH", "MEDIUM", "LOW"
+}
