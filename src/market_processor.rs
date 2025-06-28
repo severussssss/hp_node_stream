@@ -186,7 +186,7 @@ impl MarketProcessor {
                     
                     let price = f64::from_le_bytes(buffer[12..20].try_into().unwrap());
                     let size = f64::from_le_bytes(buffer[20..28].try_into().unwrap());
-                    // Binary format has inverted is_buy flag: 0 = buy, 1 = sell
+                    // Binary format has inverted logic: 1 = sell, 0 = buy
                     let is_buy = buffer[28] == 0;
                     let timestamp_ns = u64::from_le_bytes(buffer[29..37].try_into().unwrap());
                     let status = buffer[37];
@@ -346,7 +346,7 @@ impl MarketProcessor {
                 
                 let price = f64::from_le_bytes(order_data[12..20].try_into().unwrap());
                 let size = f64::from_le_bytes(order_data[20..28].try_into().unwrap());
-                // Binary format has inverted is_buy flag: 0 = buy, 1 = sell
+                // Binary format has inverted logic: 1 = sell, 0 = buy
                 let is_buy = order_data[28] == 0;
                 let timestamp_ns = u64::from_le_bytes(order_data[29..37].try_into().unwrap());
                 let status = order_data[37];
