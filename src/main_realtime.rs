@@ -3,19 +3,25 @@ mod market_processor;
 mod grpc_server;
 mod types;
 mod markets;
+mod dynamic_markets;
 mod stop_orders;
 mod mark_price;
 mod mark_price_v2;
 mod oracle_client;
-mod mark_price_service;
+// mod mark_price_service; // COMMENTED OUT DUE TO COMPILATION ERRORS
 mod order_parser;
 mod robust_order_processor;
+mod hourly_file_monitor;
+mod per_market_circuit_breaker;
+mod symbology;
+// mod robust_order_processor_v2; // TODO: Update to use DynamicMarketRegistry
 
 use anyhow::Result;
 use clap::Parser;
 use fast_orderbook::FastOrderbook;
 use market_processor::MarketUpdate;
 use robust_order_processor::{RobustOrderProcessor, ProcessorConfig};
+use dynamic_markets::DynamicMarketRegistry;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -43,7 +49,7 @@ struct Args {
     require_auth: bool,
     
     /// API keys (comma-separated)
-    #[arg(long, env = "API_KEYS")]
+    #[arg(long)]
     api_keys: Option<String>,
 }
 
@@ -64,8 +70,17 @@ async fn main() -> Result<()> {
     info!("Metrics enabled: {}", args.enable_metrics);
     info!("Authentication required: {}", args.require_auth);
 
+    // Initialize dynamic market registry
+    let market_registry = Arc::new(DynamicMarketRegistry::new());
+    market_registry.refresh_markets().await?;
+    let market_count = market_registry.market_count().await;
+    info!("Loaded {} active markets from Hyperliquid", market_count);
+    
+    // Start background refresh task
+    market_registry.clone().start_refresh_task();
+
     // Get all market configurations
-    let market_configs = markets::get_all_markets();
+    let market_configs = market_registry.get_all_markets().await;
 
     info!("Tracking {} markets", market_configs.len());
 
@@ -110,11 +125,16 @@ async fn main() -> Result<()> {
             // Update each orderbook with its oracle price
             for (market_id, orderbook) in &orderbooks_for_oracle {
                 if let Some(symbol) = market_configs_clone.get(market_id) {
-                    if let Some(oracle_price) = prices.get(symbol) {
-                        orderbook.set_oracle_price(*oracle_price);
-                        if orderbook.get_hl_mark_price().is_some() {
-                            log::debug!("{} oracle price updated: ${:.2}", symbol, oracle_price);
-                        }
+                    // Extract base currency from TradableProduct format (e.g., "BTC/USD" -> "BTC")
+                    let base_currency = if symbol.contains('/') {
+                        symbol.split('/').next().unwrap_or(symbol)
+                    } else {
+                        symbol
+                    };
+                    
+                    if let Some(oracle_price) = prices.get(base_currency) {
+                        orderbook.update_oracle_price(*oracle_price);
+                        log::debug!("{} oracle price updated: ${:.2}", symbol, oracle_price);
                     }
                 }
             }
@@ -130,13 +150,12 @@ async fn main() -> Result<()> {
         log_sample_rate: 10,        // Log every 10th error
     };
     
-    // Get list of allowed coins from market configs
-    let allowed_coins: Vec<String> = market_configs.values().cloned().collect();
-    
-    let processor = Arc::new(RobustOrderProcessor::new(processor_config, allowed_coins));
+    // Pass market registry to processor
+    let processor = Arc::new(RobustOrderProcessor::new(processor_config, market_registry.clone()));
     
     // Spawn robust order processor
-    let orderbooks_clone = orderbooks.clone();
+    let orderbooks_arc = Arc::new(orderbooks.clone());
+    let orderbooks_clone = orderbooks_arc.clone();
     let update_tx_clone = update_tx.clone();
     let stop_order_manager_clone = stop_order_manager.clone();
     let processor_clone = processor.clone();
@@ -151,24 +170,26 @@ async fn main() -> Result<()> {
     });
 
     // Create mark price service (1Hz updates)
-    let mark_price_service = Arc::new(mark_price_service::MarkPriceService::new(
-        orderbooks.clone(),
-        oracle_client.clone(),
-        tokio::time::Duration::from_secs(1),
-    ));
+    // COMMENTED OUT DUE TO COMPILATION ERRORS
+    // let mark_price_service = Arc::new(mark_price_service::MarkPriceService::new(
+    //     orderbooks.clone(),
+    //     oracle_client.clone(),
+    //     tokio::time::Duration::from_secs(1),
+    // ));
     
-    // Start mark price calculations
-    let mark_price_rx = mark_price_service.clone().start().await;
-    info!("Started mark price service (1Hz updates)");
+    // // Start mark price calculations
+    // let mark_price_rx = mark_price_service.clone().start().await;
+    // info!("Started mark price service (1Hz updates)");
 
     // Create gRPC server
     let addr = format!("0.0.0.0:{}", args.grpc_port).parse()?;
     info!("Starting gRPC server on {}", addr);
 
-    let mut service = crate::grpc_server::create_delta_streaming_service(orderbooks, update_rx, stop_order_manager);
+    let mut service = crate::grpc_server::create_delta_streaming_service(orderbooks, update_rx, stop_order_manager, market_registry.clone());
     
     // Inject mark price service
-    service.set_mark_price_service(mark_price_service, mark_price_rx);
+    // COMMENTED OUT DUE TO COMPILATION ERRORS
+    // service.set_mark_price_service(mark_price_service, mark_price_rx);
     
     // Setup authentication if required
     if args.require_auth {

@@ -1,6 +1,7 @@
 use crate::fast_orderbook::FastOrderbook;
 use crate::market_processor::MarketUpdate;
 use crate::stop_orders::StopOrderManager;
+use crate::dynamic_markets::DynamicMarketRegistry;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -29,8 +30,10 @@ pub struct DeltaStreamingService {
     orderbooks: HashMap<u32, Arc<FastOrderbook>>,
     update_rx: Arc<RwLock<broadcast::Receiver<MarketUpdate>>>,
     stop_order_manager: Arc<StopOrderManager>,
-    mark_price_service: Option<Arc<crate::mark_price_service::MarkPriceService>>,
-    mark_price_rx: Arc<RwLock<Option<broadcast::Receiver<crate::mark_price_service::MarkPriceUpdateEvent>>>>,
+    market_registry: Arc<DynamicMarketRegistry>,
+    // COMMENTED OUT DUE TO COMPILATION ERRORS
+    // mark_price_service: Option<Arc<crate::mark_price_service::MarkPriceService>>,
+    // mark_price_rx: Arc<RwLock<Option<broadcast::Receiver<crate::mark_price_service::MarkPriceUpdateEvent>>>>,
 }
 
 impl DeltaStreamingService {
@@ -38,24 +41,28 @@ impl DeltaStreamingService {
         orderbooks: HashMap<u32, Arc<FastOrderbook>>,
         update_rx: broadcast::Receiver<MarketUpdate>,
         stop_order_manager: Arc<StopOrderManager>,
+        market_registry: Arc<DynamicMarketRegistry>,
     ) -> Self {
         Self {
             orderbooks,
             update_rx: Arc::new(RwLock::new(update_rx)),
             stop_order_manager,
-            mark_price_service: None,
-            mark_price_rx: Arc::new(RwLock::new(None)),
+            market_registry,
+            // COMMENTED OUT DUE TO COMPILATION ERRORS
+            // mark_price_service: None,
+            // mark_price_rx: Arc::new(RwLock::new(None)),
         }
     }
     
-    pub fn set_mark_price_service(
-        &mut self,
-        mark_price_service: Arc<crate::mark_price_service::MarkPriceService>,
-        mark_price_rx: broadcast::Receiver<crate::mark_price_service::MarkPriceUpdateEvent>,
-    ) {
-        self.mark_price_service = Some(mark_price_service);
-        *self.mark_price_rx.write() = Some(mark_price_rx);
-    }
+    // COMMENTED OUT DUE TO COMPILATION ERRORS
+    // pub fn set_mark_price_service(
+    //     &mut self,
+    //     mark_price_service: Arc<crate::mark_price_service::MarkPriceService>,
+    //     mark_price_rx: broadcast::Receiver<crate::mark_price_service::MarkPriceUpdateEvent>,
+    // ) {
+    //     self.mark_price_service = Some(mark_price_service);
+    //     *self.mark_price_rx.write() = Some(mark_price_rx);
+    // }
     
 }
 
@@ -253,7 +260,7 @@ impl OrderbookService for DeltaStreamingService {
             let mut orderbooks = HashMap::new();
             
             for order in &orders {
-                if let Some(market_id) = crate::markets::get_market_id(&order.coin) {
+                if let Some(market_id) = self.market_registry.get_market_id(&order.coin).await {
                     if let Some(orderbook) = self.orderbooks.get(&market_id) {
                         if let Some((best_bid, best_ask)) = orderbook.get_best_bid_ask() {
                             let mid = (best_bid + best_ask) / 2.0;
@@ -383,100 +390,16 @@ impl OrderbookService for DeltaStreamingService {
 
     async fn subscribe_mark_prices(
         &self,
-        request: Request<MarkPriceSubscribeRequest>,
+        _request: Request<MarkPriceSubscribeRequest>,
     ) -> Result<Response<Self::SubscribeMarkPricesStream>, Status> {
-        let req = request.into_inner();
-        let requested_markets: std::collections::HashSet<u32> =
-            req.market_ids.into_iter().collect();
-
-        info!("New mark price subscription for {} markets", requested_markets.len());
-
-        // Get mark price receiver
-        let mark_price_rx = self.mark_price_rx.read();
-        if mark_price_rx.is_none() {
-            return Err(Status::unavailable("Mark price service not available"));
-        }
-        
-        let mut rx = mark_price_rx.as_ref().unwrap().resubscribe();
-        
-        // Create channel for filtered stream
-        let (tx, rx_stream) = tokio::sync::mpsc::channel(100);
-        
-        tokio::spawn(async move {
-            while let Ok(update) = rx.recv().await {
-                // Filter by requested markets
-                if requested_markets.is_empty() || requested_markets.contains(&update.market_id) {
-                    let pb_update = MarkPriceUpdate {
-                        market_id: update.market_id,
-                        symbol: update.symbol,
-                        timestamp: update.timestamp,
-                        hl_mark_price: Some(PbHLMarkPrice {
-                            mark_price: update.hl_mark_price.mark_price,
-                            oracle_adjusted: update.hl_mark_price.oracle_adjusted.unwrap_or(0.0),
-                            internal_median: update.hl_mark_price.internal_median,
-                            cex_median: update.hl_mark_price.cex_median.unwrap_or(0.0),
-                            used_fallback: update.hl_mark_price.used_fallback,
-                            oracle_price: 0.0, // TODO: Include if needed
-                            last_trade: 0.0,   // TODO: Include if needed
-                            cex_prices: None,   // TODO: Include if needed
-                        }),
-                        calculation_version: update.calculation_version,
-                    };
-                    
-                    if tx.send(Ok(pb_update)).await.is_err() {
-                        break; // Client disconnected
-                    }
-                }
-            }
-        });
-
-        let stream = tokio_stream::wrappers::ReceiverStream::new(rx_stream);
-        Ok(Response::new(Box::pin(stream) as Self::SubscribeMarkPricesStream))
+        Err(Status::unimplemented("Mark price service temporarily disabled"))
     }
 
     async fn get_mark_price(
         &self,
-        request: Request<GetMarkPriceRequest>,
+        _request: Request<GetMarkPriceRequest>,
     ) -> Result<Response<MarkPriceResponse>, Status> {
-        let req = request.into_inner();
-        
-        if let Some(mark_price_service) = &self.mark_price_service {
-            if let Some((hl_mark_price, age)) = mark_price_service.get_cached_mark_price(req.market_id) {
-                let symbol = self.orderbooks.get(&req.market_id)
-                    .map(|ob| ob.symbol.clone())
-                    .unwrap_or_else(|| format!("Market{}", req.market_id));
-                
-                let response = MarkPriceResponse {
-                    market_id: req.market_id,
-                    symbol,
-                    timestamp: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_millis() as i64,
-                    hl_mark_price: Some(PbHLMarkPrice {
-                        mark_price: hl_mark_price.mark_price,
-                        oracle_adjusted: hl_mark_price.oracle_adjusted.unwrap_or(0.0),
-                        internal_median: hl_mark_price.internal_median,
-                        cex_median: hl_mark_price.cex_median.unwrap_or(0.0),
-                        used_fallback: hl_mark_price.used_fallback,
-                        oracle_price: 0.0,
-                        last_trade: 0.0,
-                        cex_prices: None,
-                    }),
-                    from_cache: true,
-                    cache_age_ms: age.as_millis() as i64,
-                };
-                
-                Ok(Response::new(response))
-            } else {
-                Err(Status::not_found(format!(
-                    "No mark price available for market {}",
-                    req.market_id
-                )))
-            }
-        } else {
-            Err(Status::unavailable("Mark price service not available"))
-        }
+        Err(Status::unimplemented("Mark price service temporarily disabled"))
     }
 }
 
@@ -484,6 +407,7 @@ pub fn create_delta_streaming_service(
     orderbooks: HashMap<u32, Arc<FastOrderbook>>,
     update_rx: broadcast::Receiver<MarketUpdate>,
     stop_order_manager: Arc<StopOrderManager>,
+    market_registry: Arc<DynamicMarketRegistry>,
 ) -> DeltaStreamingService {
-    DeltaStreamingService::new(orderbooks, update_rx, stop_order_manager)
+    DeltaStreamingService::new(orderbooks, update_rx, stop_order_manager, market_registry)
 }

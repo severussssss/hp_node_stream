@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{interval, Duration, Instant};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct OraclePrice {
     pub symbol: String,
     pub price: f64,
@@ -139,11 +139,12 @@ impl OracleClient {
                                 }
                             }
                             
+                            let cache_size = new_cache.len();
                             let mut cache_write = cache.write().await;
                             *cache_write = new_cache;
                             
                             let latency = start.elapsed();
-                            log::info!("Oracle prices updated. {} assets, latency: {:?}", new_cache.len(), latency);
+                            log::info!("Oracle prices updated. {} assets, latency: {:?}", cache_size, latency);
                         }
                     }
                     Err(e) => {

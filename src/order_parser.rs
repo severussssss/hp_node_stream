@@ -210,7 +210,7 @@ impl OrderParser {
             bail!("Coin symbol too long: {}", order.coin);
         }
         if let Some(allowed) = &self.allowed_coins {
-            if !allowed.contains(&order.coin) {
+            if !allowed.is_empty() && !allowed.contains(&order.coin) {
                 bail!("Unknown coin: {}", order.coin);
             }
         }

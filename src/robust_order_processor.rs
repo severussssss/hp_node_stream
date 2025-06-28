@@ -9,8 +9,10 @@ use tracing::{error, info, warn};
 use crate::fast_orderbook::{FastOrderbook, OrderbookDelta, Order};
 use crate::market_processor::MarketUpdate;
 use crate::markets;
+use crate::dynamic_markets::DynamicMarketRegistry;
 use crate::order_parser::{OrderParser, ValidatedOrder, OrderStatus};
 use crate::stop_orders::{StopOrderManager, StopOrder};
+use crate::per_market_circuit_breaker::{PerMarketCircuitBreaker, CircuitBreakerConfig};
 
 /// Configuration for robust order processing
 pub struct ProcessorConfig {
@@ -18,7 +20,7 @@ pub struct ProcessorConfig {
     pub max_size: f64,
     pub error_threshold: u32,
     pub error_window: Duration,
-    pub log_sample_rate: u64,  // Log 1 in N errors
+    pub log_sample_rate: u32,  // Log 1 in N errors
 }
 
 impl Default for ProcessorConfig {
@@ -38,20 +40,30 @@ pub struct RobustOrderProcessor {
     parser: Arc<OrderParser>,
     config: ProcessorConfig,
     error_buffer: Arc<crate::order_parser::ErrorBuffer>,
-    circuit_breaker: Arc<CircuitBreaker>,
+    circuit_breaker: Arc<PerMarketCircuitBreaker>,
+    market_registry: Arc<DynamicMarketRegistry>,
 }
 
 impl RobustOrderProcessor {
-    pub fn new(config: ProcessorConfig, allowed_coins: Vec<String>) -> Self {
+    pub fn new(config: ProcessorConfig, market_registry: Arc<DynamicMarketRegistry>) -> Self {
+        // No need for static allowed_coins list anymore
         let parser = OrderParser::new()
             .with_limits(config.max_price, config.max_size)
-            .with_allowed_coins(allowed_coins);
+            .with_allowed_coins(vec![]); // Will use dynamic registry instead
+        
+        let cb_config = CircuitBreakerConfig {
+            failure_threshold: 10,  // Per-market threshold
+            success_threshold: 3,
+            timeout: Duration::from_secs(30),
+            error_window: config.error_window,
+        };
         
         Self {
             parser: Arc::new(parser),
             config,
             error_buffer: Arc::new(crate::order_parser::ErrorBuffer::new(100)),
-            circuit_breaker: Arc::new(CircuitBreaker::new()),
+            circuit_breaker: Arc::new(PerMarketCircuitBreaker::new(cb_config)),
+            market_registry,
         }
     }
     
@@ -83,7 +95,7 @@ impl RobustOrderProcessor {
     ) -> Result<()> {
         // Start tailing the file
         let mut cmd = Command::new("docker")
-            .args(&["exec", "hyperliquid-node-1", "tail", "-f", &data_path])
+            .args(&["exec", "hyperliquid-node-1", "tail", "-n", "0", "-f", &data_path])
             .stdout(std::process::Stdio::piped())
             .spawn()?;
         
@@ -103,22 +115,11 @@ impl RobustOrderProcessor {
                 window_start = Instant::now();
             }
             
-            // Check circuit breaker
-            if self.circuit_breaker.is_open() {
-                if self.circuit_breaker.should_attempt_reset() {
-                    info!("Attempting to reset circuit breaker");
-                    self.circuit_breaker.attempt_reset();
-                } else {
-                    continue;  // Skip processing while circuit is open
-                }
-            }
-            
-            // Process line
-            match self.process_single_order(&line, &orderbooks, &update_tx, &stop_order_manager).await {
+            // Process line with per-market circuit breaker
+            match self.process_single_order_with_circuit_breaker(&line, &orderbooks, &update_tx, &stop_order_manager).await {
                 Ok(processed) => {
                     if processed {
                         order_count += 1;
-                        self.circuit_breaker.record_success();
                         
                         // Log progress
                         if order_count % 1000 == 0 {
@@ -135,7 +136,6 @@ impl RobustOrderProcessor {
                 }
                 Err(e) => {
                     error_count += 1;
-                    self.circuit_breaker.record_failure();
                     self.error_buffer.add(e.to_string(), line.clone());
                     
                     // Sample error logging
@@ -147,15 +147,6 @@ impl RobustOrderProcessor {
                             recent_errors.len()
                         );
                     }
-                    
-                    // Trip circuit if threshold exceeded
-                    if error_count >= self.config.error_threshold {
-                        error!(
-                            "Error threshold exceeded ({}/{}), tripping circuit breaker",
-                            error_count, self.config.error_threshold
-                        );
-                        self.circuit_breaker.trip();
-                    }
                 }
             }
         }
@@ -163,20 +154,73 @@ impl RobustOrderProcessor {
         Ok(())
     }
     
-    async fn process_single_order(
+    async fn process_single_order_with_circuit_breaker(
         &self,
         line: &str,
         orderbooks: &Arc<std::collections::HashMap<u32, Arc<FastOrderbook>>>,
         update_tx: &broadcast::Sender<MarketUpdate>,
         stop_order_manager: &Arc<StopOrderManager>,
     ) -> Result<bool> {
-        // Parse and validate
-        let order = self.parser.parse_line(line)?;
+        // First parse to check what we're dealing with
+        let order = match self.parser.parse_line(line) {
+            Ok(order) => order,
+            Err(e) => {
+                // Validation errors (size, price) go to validation circuit
+                self.circuit_breaker.record_validation_failure(e.to_string());
+                return Err(e);
+            }
+        };
         
-        // Get market ID
-        let market_id = markets::get_market_id(&order.coin)
-            .ok_or_else(|| anyhow::anyhow!("Unknown market: {}", order.coin))?;
-        
+        // Try to get market ID
+        match self.market_registry.get_market_id(&order.coin).await {
+            Some(market_id) => {
+                // Check if this market's circuit is open
+                if self.circuit_breaker.is_market_open(market_id) {
+                    // Check if we should reset
+                    if self.circuit_breaker.should_attempt_market_reset(market_id) {
+                        self.circuit_breaker.attempt_market_reset(market_id);
+                        info!("Attempting to reset circuit breaker for market {}", market_id);
+                    } else {
+                        // Skip this order, circuit is open
+                        return Ok(false);
+                    }
+                }
+                
+                // Process the order
+                match self.process_market_order(order, market_id, orderbooks, update_tx, stop_order_manager).await {
+                    Ok(processed) => {
+                        if processed {
+                            self.circuit_breaker.record_market_success(market_id);
+                        }
+                        Ok(processed)
+                    }
+                    Err(e) => {
+                        self.circuit_breaker.record_market_failure(market_id, e.to_string());
+                        Err(e)
+                    }
+                }
+            }
+            None => {
+                // Unknown market - check validation circuit
+                if self.circuit_breaker.is_validation_circuit_open() {
+                    return Ok(false); // Skip unknown markets when validation circuit is open
+                }
+                
+                let err = anyhow::anyhow!("Unknown market: {}", order.coin);
+                self.circuit_breaker.record_validation_failure(err.to_string());
+                Err(err)
+            }
+        }
+    }
+    
+    async fn process_market_order(
+        &self,
+        order: ValidatedOrder,
+        market_id: u32,
+        orderbooks: &Arc<std::collections::HashMap<u32, Arc<FastOrderbook>>>,
+        update_tx: &broadcast::Sender<MarketUpdate>,
+        stop_order_manager: &Arc<StopOrderManager>,
+    ) -> Result<bool> {
         // Get orderbook
         let orderbook = orderbooks.get(&market_id)
             .ok_or_else(|| anyhow::anyhow!("No orderbook for market {}", market_id))?;
@@ -243,36 +287,11 @@ impl RobustOrderProcessor {
                     timestamp: order.timestamp,
                 };
                 
-                if order.is_buy {
-                    orderbook.add_bid(book_order);
-                    Ok(Some(OrderbookDelta::AddBid {
-                        price: order.price,
-                        size: order.size,
-                        order_id: order.id,
-                    }))
-                } else {
-                    orderbook.add_ask(book_order);
-                    Ok(Some(OrderbookDelta::AddAsk {
-                        price: order.price,
-                        size: order.size,
-                        order_id: order.id,
-                    }))
-                }
+                let delta = orderbook.add_order(book_order, order.is_buy);
+                Ok(Some(delta))
             }
             OrderStatus::Filled | OrderStatus::Canceled => {
-                if order.is_buy {
-                    orderbook.remove_bid(order.id);
-                    Ok(Some(OrderbookDelta::RemoveBid {
-                        price: order.price,
-                        order_id: order.id,
-                    }))
-                } else {
-                    orderbook.remove_ask(order.id);
-                    Ok(Some(OrderbookDelta::RemoveAsk {
-                        price: order.price,
-                        order_id: order.id,
-                    }))
-                }
+                Ok(orderbook.remove_order(order.id, order.price, order.is_buy))
             }
             _ => Ok(None),
         }
@@ -285,19 +304,25 @@ impl RobustOrderProcessor {
             interval.tick().await;
             
             let stats = self.parser.stats();
-            let circuit_state = if self.circuit_breaker.is_open() {
-                "OPEN"
-            } else {
-                "CLOSED"
-            };
+            let cb_stats = self.circuit_breaker.get_stats();
             
             info!(
-                "Parser stats - Total: {}, Parse errors: {}, Validation errors: {}, Success rate: {:.1}%, Circuit: {}",
+                "Parser stats - Total: {}, Parse errors: {}, Validation errors: {}, Success rate: {:.1}%",
                 stats.total_messages,
                 stats.parse_failures,
                 stats.validation_failures,
-                stats.success_rate,
-                circuit_state
+                stats.success_rate
+            );
+            
+            info!(
+                "Circuit breaker stats - Open markets: {} ({}), Validation circuit: {}, Total markets: {}",
+                cb_stats.open_markets.len(),
+                cb_stats.open_markets.iter()
+                    .map(|(id, reason)| format!("{}: {}", id, reason))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                cb_stats.validation_circuit_state,
+                cb_stats.total_markets
             );
             
             // Alert if success rate is low
@@ -311,77 +336,3 @@ impl RobustOrderProcessor {
     }
 }
 
-/// Simple circuit breaker implementation
-pub struct CircuitBreaker {
-    state: parking_lot::RwLock<CircuitState>,
-    failure_threshold: u32,
-    success_threshold: u32,
-    timeout: Duration,
-}
-
-#[derive(Debug, Clone)]
-enum CircuitState {
-    Closed,
-    Open { since: Instant },
-    HalfOpen,
-}
-
-impl CircuitBreaker {
-    pub fn new() -> Self {
-        Self {
-            state: parking_lot::RwLock::new(CircuitState::Closed),
-            failure_threshold: 5,
-            success_threshold: 3,
-            timeout: Duration::from_secs(30),
-        }
-    }
-    
-    pub fn is_open(&self) -> bool {
-        matches!(*self.state.read(), CircuitState::Open { .. })
-    }
-    
-    pub fn should_attempt_reset(&self) -> bool {
-        match *self.state.read() {
-            CircuitState::Open { since } => since.elapsed() > self.timeout,
-            _ => false,
-        }
-    }
-    
-    pub fn attempt_reset(&self) {
-        let mut state = self.state.write();
-        if let CircuitState::Open { since } = *state {
-            if since.elapsed() > self.timeout {
-                *state = CircuitState::HalfOpen;
-            }
-        }
-    }
-    
-    pub fn record_success(&self) {
-        let mut state = self.state.write();
-        match *state {
-            CircuitState::HalfOpen => {
-                // Could track consecutive successes before fully closing
-                *state = CircuitState::Closed;
-                info!("Circuit breaker closed");
-            }
-            _ => {}
-        }
-    }
-    
-    pub fn record_failure(&self) {
-        let mut state = self.state.write();
-        match *state {
-            CircuitState::HalfOpen => {
-                *state = CircuitState::Open { since: Instant::now() };
-                warn!("Circuit breaker re-opened");
-            }
-            _ => {}
-        }
-    }
-    
-    pub fn trip(&self) {
-        let mut state = self.state.write();
-        *state = CircuitState::Open { since: Instant::now() };
-        error!("Circuit breaker tripped");
-    }
-}

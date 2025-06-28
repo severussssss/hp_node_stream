@@ -90,8 +90,15 @@ pub enum OrderbookDelta {
 
 impl FastOrderbook {
     pub fn new(market_id: u32, symbol: String) -> Self {
+        // Extract base currency from TradableProduct format for impact notional
+        let base_currency = if symbol.contains('/') {
+            symbol.split('/').next().unwrap_or(&symbol).to_string()
+        } else {
+            symbol.clone()
+        };
+        
         // Configure mark price calculator with sensible defaults
-        let impact_notional = match symbol.as_str() {
+        let impact_notional = match base_currency.as_str() {
             "BTC" => 50000.0,   // $50k impact for BTC
             "ETH" => 20000.0,   // $20k impact for ETH
             _ => 10000.0,       // $10k impact for others
