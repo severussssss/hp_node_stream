@@ -123,36 +123,36 @@ The service supports all 199 Hyperliquid perpetual markets. To see the full list
 python3 list_markets.py --port 50053
 ```
 
-### Popular Market IDs
+### Popular Market IDs and Symbols
 
 **Major Markets:**
-- 0: BTC
-- 1: ETH  
-- 5: SOL (note: not 6!)
-- 11: ARB (note: not 2!)
-- 13: OP
-- 6: AVAX
-- 3: MATIC
-- 2: ATOM
-- 9: DOGE
-- 10: BNB
+- 0: HYPERLIQUID-BTC/USD-PERP
+- 1: HYPERLIQUID-ETH/USD-PERP  
+- 5: HYPERLIQUID-SOL/USD-PERP (note: not 6!)
+- 11: HYPERLIQUID-ARB/USD-PERP (note: not 2!)
+- 13: HYPERLIQUID-OP/USD-PERP
+- 6: HYPERLIQUID-AVAX/USD-PERP
+- 3: HYPERLIQUID-MATIC/USD-PERP
+- 2: HYPERLIQUID-ATOM/USD-PERP
+- 9: HYPERLIQUID-DOGE/USD-PERP
+- 10: HYPERLIQUID-BNB/USD-PERP
 
 **Meme Coins:**
-- 98: WIF
-- 96: PEPE
-- 48: BONK
-- 79: POPCAT
-- 93: MEW
-- 85: BRETT
-- 100: MOG
-- 125: NEIRO
-- 130: GOAT
+- 98: HYPERLIQUID-WIF/USD-PERP
+- 96: HYPERLIQUID-PEPE/USD-PERP
+- 48: HYPERLIQUID-BONK/USD-PERP
+- 79: HYPERLIQUID-POPCAT/USD-PERP
+- 93: HYPERLIQUID-MEW/USD-PERP
+- 85: HYPERLIQUID-BRETT/USD-PERP
+- 100: HYPERLIQUID-MOG/USD-PERP
+- 125: HYPERLIQUID-NEIRO/USD-PERP
+- 130: HYPERLIQUID-GOAT/USD-PERP
 
 **New Listings:**
-- 159: HYPE
-- 162: PENGU
-- 163: MOVE
-- 170: SONIC
+- 159: HYPERLIQUID-HYPE/USD-PERP
+- 162: HYPERLIQUID-PENGU/USD-PERP
+- 163: HYPERLIQUID-MOVE/USD-PERP
+- 170: HYPERLIQUID-SONIC/USD-PERP
 
 **Note:** The market IDs are assigned chronologically as markets are listed, not alphabetically.
 
@@ -161,7 +161,7 @@ python3 list_markets.py --port 50053
 ### L2 Orderbook Display
 
 ```
-BTC | Mid: $105,489.50 | Spread: $1.00 (0.1 bps) | Seq: 47445
+HYPERLIQUID-BTC/USD-PERP | Mid: $105,489.50 | Spread: $1.00 (0.1 bps) | Seq: 47445
 
                  BIDS                  |                  ASKS                 
 -------------------------------------- | --------------------------------------

@@ -109,19 +109,19 @@ python node_client.py \
   --host ec2-xx-xx-xx-xx.compute-1.amazonaws.com \
   --port 50052 \
   --api-key YOUR_API_KEY \
-  0 6 11  # BTC, SOL, PENDLE
+  0 5 11  # BTC, SOL, ARB
 ```
 
-## Market IDs
+## Market IDs and Symbols
 
-Common market IDs:
-- 0: BTC
-- 6: SOL
-- 11: PENDLE
-- 3: ETH
-- 8: ARB
+Common market IDs with architect-style symbols:
+- 0: HYPERLIQUID-BTC/USD-PERP
+- 1: HYPERLIQUID-ETH/USD-PERP
+- 5: HYPERLIQUID-SOL/USD-PERP (note: not 6!)
+- 11: HYPERLIQUID-ARB/USD-PERP (note: not 2!)
+- 159: HYPERLIQUID-HYPE/USD-PERP
 
-See `src/markets.rs` for the complete list of 199 supported markets.
+See `market_config.py` for the complete list of 172+ supported markets.
 
 ## Troubleshooting
 

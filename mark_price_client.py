@@ -137,11 +137,11 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] == 'stream':
         # Stream multiple markets
         markets = [
-            (0, "BTC"),
-            (1, "ETH"),
-            (5, "SOL"),
-            (11, "ARB"),
-            (159, "HYPE")
+            (0, "HYPERLIQUID-BTC/USD-PERP"),
+            (1, "HYPERLIQUID-ETH/USD-PERP"),
+            (5, "HYPERLIQUID-SOL/USD-PERP"),
+            (11, "HYPERLIQUID-ARB/USD-PERP"),
+            (159, "HYPERLIQUID-HYPE/USD-PERP")
         ]
         asyncio.run(stream_mark_prices(markets))
     else:
