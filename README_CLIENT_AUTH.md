@@ -8,32 +8,32 @@ The `node_client.py` supports multiple authentication methods for connecting to 
 
 Using command line:
 ```bash
-python node_client.py --host api.example.com --port 443 --api-key YOUR_API_KEY 0 6
+python node_client.py --host api.example.com --port 443 --api-key YOUR_API_KEY BTC SOL
 ```
 
 Using environment variable:
 ```bash
 export ORDERBOOK_API_KEY=YOUR_API_KEY
-python node_client.py --host api.example.com --port 443 0 6
+python node_client.py --host api.example.com --port 443 BTC SOL
 ```
 
 ### 2. JWT Token Authentication
 
 Using command line:
 ```bash
-python node_client.py --host api.example.com --port 443 --jwt-token YOUR_JWT_TOKEN 0 6
+python node_client.py --host api.example.com --port 443 --jwt-token YOUR_JWT_TOKEN BTC SOL
 ```
 
 Using environment variable:
 ```bash
 export ORDERBOOK_JWT_TOKEN=YOUR_JWT_TOKEN
-python node_client.py --host api.example.com --port 443 0 6
+python node_client.py --host api.example.com --port 443 BTC SOL
 ```
 
 ### 3. TLS with Server Verification
 
 ```bash
-python node_client.py --host api.example.com --port 443 --tls-ca ca.crt 0 6
+python node_client.py --host api.example.com --port 443 --tls-ca ca.crt BTC SOL
 ```
 
 ### 4. Mutual TLS (mTLS)
@@ -45,7 +45,7 @@ python node_client.py \
   --tls-cert client.crt \
   --tls-key client.key \
   --tls-ca ca.crt \
-  0 6
+  BTC SOL
 ```
 
 ### 5. Combined Authentication
@@ -59,7 +59,7 @@ python node_client.py \
   --port 443 \
   --api-key YOUR_API_KEY \
   --tls-ca ca.crt \
-  0 6
+  BTC SOL
 
 # mTLS + JWT
 python node_client.py \
@@ -69,7 +69,7 @@ python node_client.py \
   --tls-cert client.crt \
   --tls-key client.key \
   --tls-ca ca.crt \
-  0 6
+  BTC SOL
 ```
 
 ## Configuration File
@@ -88,7 +88,7 @@ Instead of command line arguments, you can use a JSON configuration file:
 
 2. Use it with:
 ```bash
-python node_client.py --config config.json 0 6
+python node_client.py --config config.json BTC SOL
 ```
 
 ## AWS EC2 Example
@@ -109,7 +109,7 @@ python node_client.py \
   --host ec2-xx-xx-xx-xx.compute-1.amazonaws.com \
   --port 50052 \
   --api-key YOUR_API_KEY \
-  0 5 11  # BTC, SOL, ARB
+  BTC SOL ARB
 ```
 
 ## Market IDs and Symbols
@@ -180,5 +180,5 @@ chmod 600 ~/.orderbook/config.json
 # Create alias for easy access
 alias orderbook='python /path/to/node_client.py --config ~/.orderbook/config.json'
 
-echo "Setup complete! Use 'orderbook 0 6' to stream BTC and SOL"
+echo "Setup complete! Use 'orderbook BTC SOL' to stream BTC and SOL"
 ```

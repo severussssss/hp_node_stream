@@ -16,6 +16,9 @@ from typing import List, Dict, Optional
 from datetime import datetime
 import signal
 
+# Import market config for symbol resolution
+from market_config import get_market_id
+
 # Import the generated protobuf modules
 sys.path.insert(0, 'proto')
 try:
@@ -307,26 +310,26 @@ def main():
   
 Examples:
   # Connect to local server without auth
-  %(prog)s 0 6
+  %(prog)s HYPERLIQUID-BTC/USD-PERP HYPERLIQUID-SOL/USD-PERP
   
   # Connect to remote server with API key
-  %(prog)s --host api.example.com --port 443 --api-key YOUR_KEY 0 6
+  %(prog)s --host api.example.com --port 443 --api-key YOUR_KEY HYPERLIQUID-BTC/USD-PERP HYPERLIQUID-ETH/USD-PERP
   
   # Connect with TLS
-  %(prog)s --host api.example.com --port 443 --tls-ca ca.crt 0 6
+  %(prog)s --host api.example.com --port 443 --tls-ca ca.crt HYPERLIQUID-BTC/USD-PERP
   
   # Connect with mTLS
-  %(prog)s --host api.example.com --port 443 --tls-cert client.crt --tls-key client.key --tls-ca ca.crt 0 6
+  %(prog)s --host api.example.com --port 443 --tls-cert client.crt --tls-key client.key --tls-ca ca.crt HYPERLIQUID-BTC/USD-PERP
   
   # Using environment variables
   export ORDERBOOK_API_KEY=YOUR_KEY
-  %(prog)s --host api.example.com 0 6
+  %(prog)s --host api.example.com HYPERLIQUID-BTC/USD-PERP HYPERLIQUID-ETH/USD-PERP
         """,
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
-    parser.add_argument("market_ids", nargs="+", type=int, 
-                        help="Market IDs to stream (e.g., 0 6 for BTC and SOL)")
+    parser.add_argument("symbols", nargs="+", type=str, 
+                        help="Market symbols to stream. Supports full format (HYPERLIQUID-BTC/USD-PERP) or simple (BTC)")
     parser.add_argument("--host", default="localhost", help="Server host (default: localhost)")
     parser.add_argument("--port", default=50052, type=int, help="Server port (default: 50052)")
     
@@ -371,6 +374,19 @@ Examples:
     # Build server address
     server_address = f"{args.host}:{args.port}"
     
+    # Convert symbols to market IDs
+    market_ids = []
+    for symbol in args.symbols:
+        market_id = get_market_id(symbol)
+        if market_id is not None:
+            market_ids.append(market_id)
+        else:
+            print(f"Warning: Unknown symbol '{symbol}'")
+    
+    if not market_ids:
+        print("Error: No valid symbols provided")
+        sys.exit(1)
+    
     # Create auth credentials
     auth = None
     if any([args.api_key, args.jwt_token, args.tls_ca, args.tls_cert]):
@@ -382,7 +398,7 @@ Examples:
         auth.tls_key = args.tls_key
     
     # Run streaming mode
-    asyncio.run(stream_mode(server_address, args.market_ids, auth))
+    asyncio.run(stream_mode(server_address, market_ids, auth))
 
 
 if __name__ == "__main__":

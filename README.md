@@ -15,7 +15,6 @@ A high-performance gRPC orderbook streaming service with real-time updates from 
 ## Client Applications
 
 - `node_client.py` - Main orderbook streaming client with authentication support
-- `mark_price_client.py` - Specialized client for monitoring mark prices
 - `test_external_connection.py` - Utility for testing connectivity and authentication
 
 Real-time orderbook streaming service built in Rust with Python client libraries.
@@ -60,10 +59,10 @@ cargo build --release --bin orderbook-service-realtime
 ./target/release/orderbook-service-realtime
 
 # Run with custom port
-./target/release/orderbook-service-realtime --grpc-port 50053
+./target/release/orderbook-service-realtime --grpc-port 50052
 
 # Run with logging
-RUST_LOG=info ./target/release/orderbook-service-realtime --grpc-port 50053
+RUST_LOG=info ./target/release/orderbook-service-realtime --grpc-port 50052
 ```
 
 ## Python Clients
@@ -82,28 +81,19 @@ The main client with Hyperliquid-style orderbook display that updates in place. 
 
 ```bash
 # Local connection (BTC and SOL)
-python3 node_client.py 0 6
+python3 node_client.py BTC SOL
+
+# Or use full symbology format
+python3 node_client.py HYPERLIQUID-BTC/USD-PERP HYPERLIQUID-SOL/USD-PERP
 
 # Remote with authentication
-python3 node_client.py --host api.example.com --port 443 --api-key YOUR_KEY 0 6
+python3 node_client.py --host api.example.com --port 443 --api-key YOUR_KEY BTC ETH
 
 # Stream all major markets
-python3 node_client.py 0 1 2 3 4 5 6 7 8 9
+python3 node_client.py BTC ETH ATOM TIA INJ APT SEI SOL ARB OP
 ```
 
-#### 2. Mark Price Client (`mark_price_client.py`)
-
-Specialized client for monitoring mark price calculations.
-
-```bash
-# Monitor BTC mark price
-python3 mark_price_client.py 0 BTC
-
-# Monitor multiple markets
-python3 mark_price_client.py 0 BTC 6 SOL
-```
-
-#### 3. Connection Test Utility (`test_external_connection.py`)
+#### 2. Connection Test Utility (`test_external_connection.py`)
 
 Test connectivity and authentication from external servers.
 
@@ -120,7 +110,7 @@ python3 test_external_connection.py --host api.example.com --port 443 --api-key 
 The service supports all 199 Hyperliquid perpetual markets. To see the full list:
 
 ```bash
-python3 list_markets.py --port 50053
+python3 list_markets.py --port 50052
 ```
 
 ### Popular Market IDs and Symbols
@@ -222,10 +212,10 @@ All clients support:
 
 ```bash
 # Test the orderbook service
-python3 test_orderbook_client.py --port 50053
+python3 test_orderbook_client.py --port 50052
 
 # Validate orderbook integrity
-python3 validate_orderbook.py --port 50053
+python3 validate_orderbook.py --port 50052
 ```
 
 ### Debug Logging
@@ -233,7 +223,7 @@ python3 validate_orderbook.py --port 50053
 Enable detailed logging:
 
 ```bash
-RUST_LOG=debug ./target/release/orderbook-service-realtime --grpc-port 50053
+RUST_LOG=debug ./target/release/orderbook-service-realtime --grpc-port 50052
 ```
 
 ## Troubleshooting
