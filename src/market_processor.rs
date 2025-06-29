@@ -10,6 +10,25 @@ use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 use tracing::{error, info, warn};
 
+// Binary order format constants - Format 1 (market_id first)
+const BINARY_ORDER_SIZE: usize = 38;
+const OFFSET_MARKET_ID: usize = 0;  // 4 bytes
+const OFFSET_ORDER_ID: usize = 4;   // 8 bytes
+const OFFSET_PRICE: usize = 12;     // 8 bytes
+const OFFSET_SIZE: usize = 20;      // 8 bytes
+const OFFSET_IS_BUY: usize = 28;    // 1 byte - IMPORTANT: Binary format uses inverted logic (0 = buy, 1 = sell)
+const OFFSET_TIMESTAMP: usize = 29; // 8 bytes
+const OFFSET_STATUS: usize = 37;    // 1 byte
+
+// Binary order format constants - Format 2 (order_id first)
+const OFFSET2_ORDER_ID: usize = 0;   // 8 bytes
+const OFFSET2_MARKET_ID: usize = 8;  // 4 bytes
+const OFFSET2_PRICE: usize = 12;     // 8 bytes
+const OFFSET2_SIZE: usize = 20;      // 8 bytes
+const OFFSET2_IS_BUY: usize = 28;    // 1 byte - IMPORTANT: Binary format uses inverted logic (0 = buy, 1 = sell)
+const OFFSET2_TIMESTAMP: usize = 29; // 8 bytes
+const OFFSET2_STATUS: usize = 37;    // 1 byte
+
 #[derive(Debug, Clone)]
 pub struct MarketUpdate {
     pub market_id: u32,
@@ -184,12 +203,11 @@ impl MarketProcessor {
                         continue;
                     }
                     
-                    let price = f64::from_le_bytes(buffer[12..20].try_into().unwrap());
-                    let size = f64::from_le_bytes(buffer[20..28].try_into().unwrap());
-                    // Binary format has inverted logic: 1 = sell, 0 = buy
-                    let is_buy = buffer[28] == 0;
-                    let timestamp_ns = u64::from_le_bytes(buffer[29..37].try_into().unwrap());
-                    let status = buffer[37];
+                    let price = f64::from_le_bytes(buffer[OFFSET2_PRICE..OFFSET2_PRICE + 8].try_into().unwrap());
+                    let size = f64::from_le_bytes(buffer[OFFSET2_SIZE..OFFSET2_SIZE + 8].try_into().unwrap());
+                    let is_buy = buffer[OFFSET2_IS_BUY] != 0;
+                    let timestamp_ns = u64::from_le_bytes(buffer[OFFSET2_TIMESTAMP..OFFSET2_TIMESTAMP + 8].try_into().unwrap());
+                    let status = buffer[OFFSET2_STATUS];
                     
                     // Process based on status
                     let delta = match status {
@@ -334,9 +352,9 @@ impl MarketProcessor {
                 
                 let order_data = &data[offset..offset + ORDER_SIZE];
                 
-                // Parse binary order
-                let order_id = u64::from_le_bytes(order_data[0..8].try_into().unwrap());
-                let market_id = u32::from_le_bytes(order_data[8..12].try_into().unwrap());
+                // Parse binary order (Format 2: order_id first)
+                let order_id = u64::from_le_bytes(order_data[OFFSET2_ORDER_ID..OFFSET2_ORDER_ID + 8].try_into().unwrap());
+                let market_id = u32::from_le_bytes(order_data[OFFSET2_MARKET_ID..OFFSET2_MARKET_ID + 4].try_into().unwrap());
                 
                 // Skip if not our market
                 if market_id != self.market_id {
@@ -344,12 +362,11 @@ impl MarketProcessor {
                     continue;
                 }
                 
-                let price = f64::from_le_bytes(order_data[12..20].try_into().unwrap());
-                let size = f64::from_le_bytes(order_data[20..28].try_into().unwrap());
-                // Binary format has inverted logic: 1 = sell, 0 = buy
-                let is_buy = order_data[28] == 0;
-                let timestamp_ns = u64::from_le_bytes(order_data[29..37].try_into().unwrap());
-                let status = order_data[37];
+                let price = f64::from_le_bytes(order_data[OFFSET2_PRICE..OFFSET2_PRICE + 8].try_into().unwrap());
+                let size = f64::from_le_bytes(order_data[OFFSET2_SIZE..OFFSET2_SIZE + 8].try_into().unwrap());
+                let is_buy = order_data[OFFSET2_IS_BUY] != 0;
+                let timestamp_ns = u64::from_le_bytes(order_data[OFFSET2_TIMESTAMP..OFFSET2_TIMESTAMP + 8].try_into().unwrap());
+                let status = order_data[OFFSET2_STATUS];
                 
                 // Process based on status
                 let delta = match status {
